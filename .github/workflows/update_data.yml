@@ -1,0 +1,91 @@
+name: Update data (prices + weather) and commit
+on:
+  schedule:
+    - cron: '0 8 * * *'   # daily 08:00 UTC
+  workflow_dispatch:
+
+env:
+  DATA_DIR: Dados
+  YF_TICKER: LBR=F
+  FORECAST_DAYS: '14'
+  COORDS: '-23.0,-51.0'  # ajuste (suporta múltiplas coords separadas por ';')
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas requests
+
+      - name: Create data dir
+        run: |
+          mkdir -p ${DATA_DIR}
+
+      - name: Download LBR=F via yfinance and save CSV
+        run: |
+          python - <<'PY'
+          import yfinance as yf, pandas as pd, os
+          df = yf.download(tickers="${{ env.YF_TICKER }}", period="365d", interval="1d", progress=False)
+          df = df.reset_index()
+          outdir = os.getenv("DATA_DIR","Dados")
+          os.makedirs(outdir, exist_ok=True)
+          outpath = os.path.join(outdir, "lumber_futures_LBR=F_latest.csv")
+          df.to_csv(outpath, index=False)
+          print("Saved LBR=F to", outpath)
+          PY
+
+      - name: Download Open-Meteo forecast(s) and save CSV(s)
+        run: |
+          python - <<'PY'
+          import requests, pandas as pd, os
+          coords = os.getenv("COORDS","-23.0,-51.0")
+          days = int(os.getenv("FORECAST_DAYS","14"))
+          outdir = os.getenv("DATA_DIR","Dados")
+          os.makedirs(outdir, exist_ok=True)
+          for pair in coords.split(';'):
+              lat,lon = pair.split(',')
+              params = {"latitude": lat.strip(), "longitude": lon.strip(), "daily": "precipitation_sum","timezone":"UTC","forecast_days": days}
+              resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=30)
+              if resp.status_code != 200:
+                  print("Open-Meteo failed for", lat, lon, resp.status_code); continue
+              j = resp.json()
+              if "daily" not in j or "time" not in j["daily"]:
+                  print("No daily in response for", lat, lon); continue
+              df = pd.DataFrame({"Date": j["daily"]["time"], "precip_mm": j["daily"].get("precipitation_sum", [0]*len(j["daily"]["time"]))})
+              fname = f"open_meteo_forecast_{lat.strip()}_{lon.strip()}.csv"
+              path = os.path.join(outdir, fname)
+              df.to_csv(path, index=False)
+              print("Saved forecast to", path)
+          PY
+
+      - name: Attempt download CHIRPS placeholder
+        run: |
+          python - <<'PY'
+          import os
+          outdir = os.getenv("DATA_DIR","Dados")
+          os.makedirs(outdir, exist_ok=True)
+          meta_path = os.path.join(outdir, "chirps_metadata_placeholder.txt")
+          with open(meta_path, "w") as f:
+              f.write("CHIRPS placeholder - configure server-side extraction for CHIRPS rasters/CSV.\n")
+          print("Wrote CHIRPS placeholder", meta_path)
+          PY
+
+      - name: Commit & push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Dados || true
+          git commit -m "Auto update prices + weather data (yfinance / open-meteo)" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }} || echo "Push failed"
