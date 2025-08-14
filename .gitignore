@@ -1,0 +1,30 @@
+# Python / environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDEs
+.vscode/
+.idea/
+
+# Streamlit / local data
+.Dados/
+Dados/
+lumber_analysis/
+*.sqlite3
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Excel / outputs
+*.xlsx
+*.xls
+
+# logs
+*.log
