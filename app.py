@@ -62,7 +62,7 @@ else:
     st.success("Dados do FRED carregados com sucesso.")
 
     # KPI - Cálculo simples
-    last_price_index = fred_df['WPU081'].iloc[-1] if 'WPU081' in fred_df.columns else "N/A"
+    last_price_index = fred_df['Price_Index'].iloc[-1] if 'Price_Index' in fred_df.columns else "N/A"
     
     col1, col2 = st.columns(2)
     with col1:
@@ -71,7 +71,8 @@ else:
     st.markdown("### Tendência Histórica de Preços (FRED)")
     
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=fred_df['Date'], y=fred_df['WPU081'], mode='lines', name='Índice de Preços (WPU081)'))
+    # CORREÇÃO AQUI: 'WPU081' mudado para 'Price_Index'
+    fig.add_trace(go.Scatter(x=fred_df['Date'], y=fred_df['Price_Index'], mode='lines', name='Índice de Preços (WPU081)'))
     fig.update_layout(title='Índice de Preços de Madeira (FRED)', yaxis_title='Índice (1982=100)', template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
