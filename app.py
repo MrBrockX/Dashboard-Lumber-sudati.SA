@@ -97,7 +97,7 @@ def fetch_open_meteo_forecast(lat, lon, days=14):
         j = resp.json()
         if "daily" not in j or "time" not in j["daily"]:
             return None
-        df = pd.DataFrame({"Date": pd.to_datetime(j["daily"]["time"], utc=True).tz_convert(None),
+        df = pd.DataFrame({"Date": pd.to_datetime(j["daily"]["time"], utc=True).dt.tz_convert(None),
                            "precip_mm": j["daily"].get("precipitation_sum", [0]*len(j["daily"]["time"]))})
         return df
     except Exception:
