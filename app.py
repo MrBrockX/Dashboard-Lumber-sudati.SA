@@ -1,15 +1,13 @@
 # app.py
-# Sudati — Lumber Futures & Weather Hedge Toolkit
-# Versão consolidada: busca local CSVs gerados pelo workflow, fallback para yfinance/Open-Meteo.
+# Sudati — Lumber Futures & Weather Hedge Toolkit (arquivo unificado)
 import os
-from datetime import datetime, timedelta
 import io
-
-import pandas as pd
+from datetime import datetime, timedelta
 import numpy as np
-import yfinance as yf
+import pandas as pd
 import requests
 import streamlit as st
+import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pandas.api import types as ptypes
@@ -26,11 +24,32 @@ except Exception:
 # ---------- CONFIG ----------
 st.set_page_config(page_title="Sudati — Lumber Hedge Toolkit", layout="wide", initial_sidebar_state="expanded")
 DATA_DIR = "Dados"
+OUTPUT_DIR = "lumber_analysis"
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 LOCAL_PRICE_CSV = os.path.join(DATA_DIR, "lumber_futures_LBR=F_latest.csv")
-LOCAL_FORECAST_PATTERN = "open_meteo_forecast_{lat}_{lon}.csv"  # format with lat/lon
+LOCAL_FORECAST_PATTERN = "open_meteo_forecast_{lat}_{lon}.csv"
 YF_TICKER = "LBR=F"
 
-# ---------- UTIL ----------
+# ---------- UTIL (FRED + file helpers + meteo) ----------
+@st.cache_data(ttl=3600)
+def get_fred_data():
+    """Get FRED lumber index (WPU081) as DataFrame"""
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WPU081"
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        df = pd.read_csv(io.BytesIO(r.content))
+        if df.shape[1] >= 2:
+            df.columns = ['Date', 'Price_Index']
+        else:
+            df.columns = ['Date', 'Price_Index']
+        df['Date'] = pd.to_datetime(df['Date'], errors="coerce")
+        return df
+    except Exception:
+        return None
+
 @st.cache_data(ttl=300)
 def fetch_yf(ticker: str, period: str = "365d", interval: str = "1d"):
     try:
@@ -38,7 +57,7 @@ def fetch_yf(ticker: str, period: str = "365d", interval: str = "1d"):
         if df is None or df.empty:
             return None
         df = df.reset_index()
-        if "Close" not in df.columns and "Adj Close" in df.columns:
+        if "Adj Close" in df.columns and "Close" not in df.columns:
             df = df.rename(columns={"Adj Close": "Close"})
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_convert(None)
@@ -57,8 +76,7 @@ def fetch_open_meteo_history(lat, lon, start_date, end_date):
     }
     try:
         resp = requests.get(base, params=params, timeout=30)
-        if resp.status_code != 200:
-            return None
+        resp.raise_for_status()
         j = resp.json()
         if "daily" not in j or "time" not in j["daily"]:
             return None
@@ -75,8 +93,7 @@ def fetch_open_meteo_forecast(lat, lon, days=14):
               "daily": "precipitation_sum", "timezone": "UTC", "forecast_days": days}
     try:
         resp = requests.get(base, params=params, timeout=20)
-        if resp.status_code != 200:
-            return None
+        resp.raise_for_status()
         j = resp.json()
         if "daily" not in j or "time" not in j["daily"]:
             return None
@@ -198,17 +215,14 @@ def standardize_columns(df: pd.DataFrame):
 # ---------- DATA LOAD ----------
 def load_data(prefer_local=True, uploaded_recent=None, period="365d", interval="1d"):
     recent = None
-    # prefer explicit workflow-generated file if present
     if prefer_local and os.path.exists(LOCAL_PRICE_CSV):
         recent = read_csv_safe(LOCAL_PRICE_CSV)
         if recent is not None:
             st.info(f"Usando CSV local gerado: {LOCAL_PRICE_CSV}")
-    # allow upload
     if recent is None and uploaded_recent is not None:
         recent = read_csv_safe(uploaded_recent)
         if recent is not None:
             st.info("Usando CSV enviado para dados recentes.")
-    # fallback to yfinance
     if recent is None:
         recent = fetch_yf(YF_TICKER, period=period, interval=interval)
         if recent is not None:
@@ -259,8 +273,8 @@ def sarimax_forecast(y, exog, future_exog=None, order=(1,1,1), seasonal_order=(1
         if future_exog is None:
             future_exog = np.repeat(exog.iloc[-1:].values, 30, axis=0)
         f = res.get_forecast(steps=len(future_exog), exog=future_exog)
-        mean = f.predicted_mean
-        conf = f.conf_int()
+        mean = f.predicted_mean.reset_index(drop=True)
+        conf = f.conf_int().reset_index(drop=True)
         return mean, conf, res
     except Exception:
         return None, None, None
@@ -366,17 +380,20 @@ if recent is None:
     st.error("Sem série de preço disponível. Forneça CSV ou permita yfinance.")
     st.stop()
 
+# FRED data (optional long-term index)
+fred_df = get_fred_data()
+if fred_df is not None:
+    st.sidebar.success("FRED index carregado (WPU081)")
+
 # Load weather: prefer saved forecast file in Dados/
 weather_hist = None
 weather_forecast = None
-# try local forecast file first
 local_forecast_name = LOCAL_FORECAST_PATTERN.format(lat=str(lat), lon=str(lon))
 local_forecast_path = os.path.join(DATA_DIR, local_forecast_name)
 if prefer_local and os.path.exists(local_forecast_path):
     weather_forecast = read_csv_safe(local_forecast_path)
     if weather_forecast is not None:
         st.info(f"Usando forecast Open-Meteo local: {local_forecast_path}")
-# fetch history & forecast if not present
 if weather_forecast is None:
     try:
         weather_forecast = fetch_open_meteo_forecast(lat, lon, days=steps)
@@ -387,7 +404,6 @@ try:
 except Exception:
     weather_hist = None
 if weather_hist is None:
-    # create empty placeholder with zeros matching price dates
     weather_hist = pd.DataFrame({"Date": recent["Date"].unique(), "precip_mm": 0.0})
 
 merged, exog, future_exog = prepare_for_model(recent, weather_hist, weather_forecast)
@@ -419,11 +435,11 @@ if simulate:
             fm, fc, mobj = sarimax_forecast(merged["Close"], exog, future_exog=future_exog)
             forecast_mean, forecast_conf, model_obj = fm, fc, mobj
         try:
-            wf_backtest = walk_forward_backtest(merged["Close"], exog, train_window=min(180, len(merged)-30), forecast_horizon=14)
+            wf_backtest = walk_forward_backtest(merged["Close"], exog, train_window=min(180, max(90, len(merged)-30)), forecast_horizon=14)
         except Exception:
             wf_backtest = None
 
-# Plot
+# Plot builder
 def build_figure(merged, forecast_mean=None, forecast_conf=None):
     template = "plotly_dark"
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.12,0.62,0.26], vertical_spacing=0.06)
@@ -441,8 +457,10 @@ def build_figure(merged, forecast_mean=None, forecast_conf=None):
         fut_dates = [last_date + timedelta(days=i+1) for i in range(len(forecast_mean))]
         fig.add_trace(go.Scatter(x=fut_dates, y=forecast_mean, name="Forecast mean", line=dict(color="orange", dash="dash")), row=2, col=1)
         if forecast_conf is not None:
-            fig.add_trace(go.Scatter(x=fut_dates, y=forecast_conf.iloc[:,0], name="Lower CI", line=dict(color="rgba(255,165,0,0.2)"), showlegend=False), row=2, col=1)
-            fig.add_trace(go.Scatter(x=fut_dates, y=forecast_conf.iloc[:,1], name="Upper CI", line=dict(color="rgba(255,165,0,0.2)"), fill='tonexty', fillcolor="rgba(255,165,0,0.1)", showlegend=False), row=2, col=1)
+            lower = forecast_conf.iloc[:,0] if hasattr(forecast_conf, "iloc") else forecast_conf["lower"]
+            upper = forecast_conf.iloc[:,1] if hasattr(forecast_conf, "iloc") else forecast_conf["upper"]
+            fig.add_trace(go.Scatter(x=fut_dates, y=lower, name="Lower CI", line=dict(color="rgba(255,165,0,0.2)"), showlegend=False), row=2, col=1)
+            fig.add_trace(go.Scatter(x=fut_dates, y=upper, name="Upper CI", line=dict(color="rgba(255,165,0,0.2)"), fill='tonexty', fillcolor="rgba(255,165,0,0.1)", showlegend=False), row=2, col=1)
     if "precip_mm" in merged.columns:
         fig.add_trace(go.Bar(x=merged["Date"], y=merged["precip_mm"], name="Precip (mm)", marker_color="royalblue", opacity=0.4), row=3, col=1)
     fig.update_layout(height=900, template=template, showlegend=True, paper_bgcolor='black', plot_bgcolor='black',
@@ -498,9 +516,13 @@ if show_debug:
             st.text(str(model_obj.summary()))
         except Exception:
             st.write("Resumo indisponível.")
+    if fred_df is not None:
+        st.write("FRED head:")
+        st.dataframe(fred_df.tail(5))
 
 st.markdown("---")
 st.header("Export")
+# Export forecast CSV / Excel
 if forecast_mean is not None:
     csv_buf = io.StringIO()
     last_date = merged["Date"].max()
@@ -508,5 +530,33 @@ if forecast_mean is not None:
     out = pd.DataFrame({"Date": fut_dates, "forecast": list(map(float, forecast_mean))})
     out.to_csv(csv_buf, index=False)
     st.download_button("Baixar forecast CSV", csv_buf.getvalue(), file_name="forecast_lumber.csv", mime="text/csv")
+
+# Consolidated Excel: recent prices + forecast + fred (if available)
+def create_consolidated_excel(prices_df, forecast_df=None, fred_df=None):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        prices_df_copy = prices_df.copy()
+        if "Date" in prices_df_copy.columns:
+            prices_df_copy["Date"] = pd.to_datetime(prices_df_copy["Date"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+        prices_df_copy.to_excel(writer, sheet_name="Recent_Prices", index=False)
+        if forecast_df is not None:
+            fdf = forecast_df.copy()
+            fdf["Date"] = pd.to_datetime(fdf["Date"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+            fdf.to_excel(writer, sheet_name="Forecast", index=False)
+        if fred_df is not None:
+            ff = fred_df.copy()
+            ff["Date"] = pd.to_datetime(ff["Date"]).dt.strftime("%Y-%m-%d")
+            ff.to_excel(writer, sheet_name="FRED_Index", index=False)
+    buf.seek(0)
+    return buf
+
+if st.button("Gerar Excel consolidado"):
+    forecast_df = None
+    if forecast_mean is not None:
+        last_date = merged["Date"].max()
+        fut_dates = [last_date + timedelta(days=i+1) for i in range(len(forecast_mean))]
+        forecast_df = pd.DataFrame({"Date": fut_dates, "forecast": list(map(float, forecast_mean))})
+    excel_buf = create_consolidated_excel(recent, forecast_df=forecast_df, fred_df=fred_df)
+    st.download_button("Baixar Excel consolidado", data=excel_buf, file_name=f"lumber_consolidated_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.write("Última atualização (UTC):", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
