@@ -1,31 +1,35 @@
+# scripts/update_data.py
+# Modificado para incluir a busca de dados do FRED
+
 #!/usr/bin/env python3
 """
 scripts/update_data.py
-Baixa dados de LBR=F via yfinance e previsões/histórico Open-Meteo.
+Baixa dados do FRED e previsões/histórico Open-Meteo.
 Gera CSVs em Dados/.
 """
+
 import os
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-import yfinance as yf
+import io
 
 DATA_DIR = os.getenv("DATA_DIR", "Dados")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-def fetch_lumber(ticker="LBR=F", period="365d"):
+def fetch_fred_data():
     try:
-        df = yf.download(tickers=ticker, period=period, interval="1d", progress=False)
-        if df is None or df.empty:
-            print("yfinance: sem dados retornados")
-            return
-        df.reset_index(inplace=True)
-        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d %H:%M:%S')
-        out = os.path.join(DATA_DIR, f"lumber_futures_{ticker}_latest.csv")
-        df.to_csv(out, index=False)
-        print("Saved", out)
+        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WPU081"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        df = pd.read_csv(io.BytesIO(r.content))
+        df.columns = ['Date', 'Price_Index']
+        df['Date'] = pd.to_datetime(df['Date'])
+        out_path = os.path.join(DATA_DIR, "lumber_fred_historical_latest.csv")
+        df.to_csv(out_path, index=False)
+        print("Saved FRED data to", out_path)
     except Exception as e:
-        print("yfinance error:", e)
+        print("FRED data fetch error:", e)
 
 def fetch_open_meteo_forecast(lat=-23.0, lon=-51.0, days=14):
     try:
@@ -65,6 +69,7 @@ def fetch_open_meteo_history(lat=-23.0, lon=-51.0, days=365):
 if __name__ == "__main__":
     LAT = float(os.getenv("LAT", -23.0))
     LON = float(os.getenv("LON", -51.0))
-    fetch_lumber()
+    
+    fetch_fred_data()
     fetch_open_meteo_forecast(lat=LAT, lon=LON)
     fetch_open_meteo_history(lat=LAT, lon=LON)
