@@ -23,6 +23,8 @@ FORECAST_DATA_FILE = os.path.join(DATA_DIR, "open_meteo_forecast_-23.0_-51.0.csv
 HISTORY_DATA_FILE = os.path.join(DATA_DIR, "open_meteo_history_-23.0_-51.0.csv")
 
 # ---------- UTIL (leitura de arquivos) ----------
+# ADICIONADO: @st.cache_data para otimizar o carregamento de dados
+@st.cache_data(ttl=3600)
 def read_csv_safe(file_path):
     try:
         if os.path.exists(file_path):
@@ -50,7 +52,7 @@ with st.sidebar:
     st.markdown("---")
     st.info("Os dados são atualizados automaticamente via GitHub Actions. \n\nPara atualizar manualmente, rode `python scripts/update_data.py` no seu terminal.")
 
-# Carregar dados
+# Carregar dados usando a função com caching
 fred_df = read_csv_safe(FRED_DATA_FILE)
 weather_forecast_df = read_csv_safe(FORECAST_DATA_FILE)
 weather_hist_df = read_csv_safe(HISTORY_DATA_FILE)
