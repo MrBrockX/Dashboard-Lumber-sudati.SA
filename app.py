@@ -23,15 +23,23 @@ HISTORY_DATA_FILE = os.path.join(DATA_DIR, "open_meteo_history_-23.0_-51.0.csv")
 # --- FUNÇÕES DE UTILIDADE E ANÁLISE ---
 
 @st.cache_data(ttl=3600)
-def read_csv_safe(file_path, date_col):
+def read_csv_safe(file_path):
     """
     Função segura para ler arquivos CSV e converter a coluna de data.
     """
     try:
         if os.path.exists(file_path):
             df = pd.read_csv(file_path)
-            if date_col in df.columns:
-                df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+            # Tenta encontrar a coluna de data com nomes diferentes
+            if 'Date' in df.columns:
+                date_col = 'Date'
+            elif 'observation_date' in df.columns:
+                date_col = 'observation_date'
+            else:
+                st.error(f"Erro: Coluna de data não encontrada no arquivo {file_path}. Verifique as colunas.")
+                return None
+            
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
             return df.dropna(subset=[date_col])
         return None
     except Exception as e:
@@ -57,6 +65,19 @@ def calculate_simple_signal(df, forecast_horizon=12, threshold_pct=0.03):
         return "Comprar (Preço Abaixo da Média)"
     else:
         return "Manter Posição"
+        
+def calculate_vaR(data, confidence_level=0.95):
+    """
+    Calcula o Valor em Risco (VaR) de um DataFrame.
+    """
+    if data.empty:
+        return None
+    returns = data.pct_change().dropna()
+    return_std = returns.std()
+    return_mean = returns.mean()
+    var = - (return_mean + 1.65 * return_std) # 1.65 for 95% confidence
+    return var
+
 
 # --- DASHBOARD PRINCIPAL ---
 
@@ -64,14 +85,14 @@ st.title("Sudati — Plataforma de Hedge Estratégico")
 st.markdown("Uma narrativa de dados para o controle e crescimento da sua operação.")
 
 # Carregar dados
-fred_df_raw = read_csv_safe(FRED_DATA_FILE, date_col='observation_date')
-if fred_df_raw is not None:
-    fred_df = fred_df_raw.rename(columns={'observation_date': 'Date', 'WPU081': 'Price_Index'})
+fred_df = read_csv_safe(FRED_DATA_FILE)
+if fred_df is not None:
+    fred_df = fred_df.rename(columns={'observation_date': 'Date', 'WPU081': 'Price_Index'})
 else:
     fred_df = pd.DataFrame()
 
-weather_forecast_df = read_csv_safe(FORECAST_DATA_FILE, date_col='Date')
-weather_hist_df = read_csv_safe(HISTORY_DATA_FILE, date_col='Date')
+weather_forecast_df = read_csv_safe(FORECAST_DATA_FILE)
+weather_hist_df = read_csv_safe(HISTORY_DATA_FILE)
 
 # Verificação inicial
 if fred_df.empty:
